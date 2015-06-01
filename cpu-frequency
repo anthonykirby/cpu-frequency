@@ -1,0 +1,325 @@
+#!/usr/bin/perl -w
+use strict;
+use POSIX ":sys_wait_h";
+use File::Basename;
+
+# TODO cope with quantities of CPUs != 4
+
+# TODO display sensible things if scaling is other than 50-100% max CPU
+
+# TODO tooltip display with extra detail
+
+# TODO size is configurable / detected
+
+# TODO size-changed notification
+
+# TODO check all CPUs have same limits
+
+# TODO configure refresh rate
+
+
+#use Config::Simple;		# RPM: perl-Config-Simple
+
+my $DEBUG=0;
+#$DEBUG=1;
+
+my $program = basename($0);
+#openlog($program, "ndelay,pid", "local0");
+#use Sys::Syslog qw(:standard :macros);		# perl-Sys-Syslog
+#syslog(LOG_INFO, "started");
+use Gtk2 '-init';	# RPM: perl-Gtk2
+
+#my $CONFIG_FILE='yum-notifier.cfg';
+#my $cfg = new Config::Simple($CONFIG_FILE);
+#die "missing config file '$CONFIG_FILE'" unless -r $CONFIG_FILE;
+#die "failed to read config file '$CONFIG_FILE'" unless $cfg;
+
+# how often to refresh
+my $REFRESH_INTERVAL = 1;	# seconds
+
+my $IMAGES_LOCATION='images';	# TODO
+
+# see http://gtk2-perl.sourceforge.net/doc/gtk2-perl-study-guide/index.html
+
+
+my $statusicon = Gtk2::StatusIcon->new_from_file("$IMAGES_LOCATION/icon.png");
+
+
+$statusicon->set_tooltip("cpu_frequency");
+$statusicon->signal_connect( 'activate', \&pop_it );
+$statusicon->signal_connect( 'popup-menu', \&statusicon_context );
+
+#show in tray
+$statusicon->set_visible(1);
+
+# context menu
+my $contextmenu = Gtk2::Menu->new();
+#my $contextmenu_check_now = Gtk2::ImageMenuItem->new_with_label( "Check Now" );
+#$contextmenu_check_now->signal_connect( activate => \&context_click_check_now );
+#$contextmenu->add( $contextmenu_check_now );
+my $contextmenu_quit = Gtk2::ImageMenuItem->new_with_label( "Quit" );
+$contextmenu_quit->signal_connect( activate => \&exit_it );
+$contextmenu_quit->set_image( Gtk2::Image->new_from_stock( 'gtk-quit', 'menu' ) );
+$contextmenu->add( $contextmenu_quit );
+
+
+# configure
+my $cpus = count_cpus();
+my %limits = get_limits($cpus);
+
+# what's the "min" in percent? (we'll colour that green)
+my $green_percent = int(($limits{0}{'min'} * 100 + 0.5) / $limits{0}{'max'});
+my $orange_percent = int(($green_percent + 100) / 2);
+log_debug ("green_percent=$green_percent%") if $DEBUG;
+log_debug ("orange_percent=$orange_percent%") if $DEBUG;
+
+
+# TODO recalculate on rescale
+my $WIDTH=24;
+my $HEIGHT=24;
+
+my $BAR_HEIGHT = 16;	# TODO
+
+my $green_height = int($green_percent / 100 * $BAR_HEIGHT);
+my $orange_height = int($orange_percent / 100 * $BAR_HEIGHT);
+
+sleep(1) if $DEBUG;
+
+refresh_start();
+
+#end event loop
+Gtk2->main;
+
+
+
+sub exit_it {
+   Gtk2->main_quit;
+   return 0;
+}
+
+sub pop_it {
+#	$statusicon->set_from_file('rpm_bad.png');
+}
+
+sub context_click_check_now {
+	consider_update_callback(1);
+}
+
+sub statusicon_context {
+    my $ticon = shift;
+    my $event = shift;
+    my $time = shift;
+
+	$contextmenu->show_all;
+
+	#to position the menu under the icon, instead of at mouse position
+	my ($x, $y, $push) = Gtk2::StatusIcon::position_menu($contextmenu, $ticon);
+    $contextmenu->popup(undef, undef, sub {($x, $y,$push)}, undef, $event, $time);  
+  
+    $contextmenu->show_all;
+	return 1;
+}
+
+
+sub count_cpus {
+	my $count=0;
+	while (-d "/sys/devices/system/cpu/cpu$count") {
+		$count++;
+	}
+	log_debug ("detected $count CPUs") if $DEBUG;
+	return $count;
+}
+
+sub refresh_start {
+	# start polling...
+	Glib::Timeout->add($REFRESH_INTERVAL*250, \&refresh_callback);
+}
+
+sub refresh_callback {
+	log_debug ("refresh") if $DEBUG;
+	
+	update();
+	
+	return 1;	# keep going
+}
+
+
+
+sub get_limits {
+	my $cpus = shift or die;
+	my %limits = ();
+	for my $cpu (0 .. $cpus-1) {
+		$limits{$cpu}{'min'} = get_min_freq($cpu);
+		$limits{$cpu}{'max'} = get_max_freq($cpu);
+		log_debug ("$cpu: $limits{$cpu}{'min'}-$limits{$cpu}{'max'}") if $DEBUG;
+	}
+	return %limits;
+}
+
+
+sub get_max_freq {
+	my $cpu = shift;
+	die unless defined $cpu;
+
+	my $max = read_file("/sys/devices/system/cpu/cpu${cpu}/cpufreq/scaling_max_freq");
+	die unless $max =~ /^\d+$/;
+	
+	return $max;
+}
+
+sub get_min_freq {
+	my $cpu = shift;
+	die unless defined $cpu;
+
+	my $min = read_file("/sys/devices/system/cpu/cpu${cpu}/cpufreq/scaling_min_freq");
+	die unless $min =~ /^\d+$/;
+	
+	return $min;
+}
+sub get_cur_freq {
+	my $cpu = shift;
+	die unless defined $cpu;
+
+	my $cur = read_file("/sys/devices/system/cpu/cpu${cpu}/cpufreq/scaling_cur_freq");
+	die unless $cur =~ /^\d+$/;
+	
+	return $cur;
+}
+
+sub read_file {
+	my $filename = shift or die;
+	chomp(my $contents = `cat $filename`);	# TODO more efficient
+#	print "-->$contents<--\n";
+	return $contents;
+}
+
+
+
+sub put_pixel {
+	my $r_pixels = shift or die;
+	my $x = shift;
+	my $y = shift;
+	my $pixel = shift;
+	substr($$r_pixels, ($x + $WIDTH*$y)*4, 4) = $pixel;
+}
+
+sub get_freqs_as_percents {
+	my @percents;
+	for my $cpu (0 .. $cpus-1) {
+		my $current = get_cur_freq($cpu);
+#		my $percent = int(((($current - $limits{$cpu}{'min'}) * 100) + 0.5) / ($limits{$cpu}{'max'}-$limits{$cpu}{'min'}));
+		my $percent = int(($current * 100 + 0.5) / $limits{$cpu}{'max'});
+		log_debug ("$cpu: $current $percent") if $DEBUG;
+		push @percents, $percent;
+	}
+	return @percents;	
+}
+
+sub create_canvas {
+	my $data;
+	# initialise buffer
+	for (my $x=0;$x<$WIDTH;$x++) {
+		for (my $y=0;$y<$HEIGHT;$y++) {
+			$data .= pack("CCCC", 255, 0, 0, 0);	# RGBA
+		}
+	}
+	# border
+	my @border_colour = (127,127,127);
+	my $border_pixel = pack("CCCC", @border_colour, 255);
+	for (my $x=1;$x<$WIDTH-1;$x++) {
+		put_pixel(\$data, $x, 1, $border_pixel);	# RGBA
+		put_pixel(\$data, $x, $HEIGHT-2, $border_pixel);	# RGBA
+	}
+	for (my $y=1;$y<$HEIGHT-2;$y++) {
+		put_pixel(\$data, 1, $y, $border_pixel);	# RGBA
+		put_pixel(\$data, $WIDTH-2, $y, $border_pixel);	# RGBA
+	}
+	# background
+	for (my $x=3;$x<$WIDTH-3;$x++) {
+		for (my $y=3;$y<$HEIGHT-3;$y++) {
+			put_pixel(\$data, $x, $y, pack("CCCC", 0, 0, 0, 255));	# RGBA
+		}
+	}
+	return $data;
+}
+
+
+sub update {
+	my @freq_percent = get_freqs_as_percents();
+
+	# convert to pixels / bar heights
+	my @bar_heights;
+	for my $f(@freq_percent) {
+		my $bar_height = int ($f / 100 * $BAR_HEIGHT);
+		push @bar_heights, $bar_height;
+	}
+
+
+	# has it changed since we last looked?
+	# (deliberately doing this check after conversion to pixels)
+	our @previous_bar_heights;
+	my $identical = 1;
+	if (@previous_bar_heights) {
+		for (my $x = 0 ; $x < scalar @bar_heights; $x++) {
+			$identical = undef unless $bar_heights[$x] == $previous_bar_heights[$x];
+		}
+	} else {
+		$identical = undef;
+	}
+	@previous_bar_heights = @bar_heights;
+	return if $identical;
+
+
+	# blank canvas, with border etc
+	my $data = create_canvas();
+	
+		
+	# draw bars..
+
+	my $BARS = scalar(@bar_heights);	# how many bars?
+	my $BAR_WIDTH = int (($WIDTH - 8) / $BARS);	# width (incl gap) between bars
+	my $BAR_GAP = 1;
+	
+	for (my $bar=0; $bar<$BARS ; $bar++) {	# iterate over bars
+	
+		my $bar_height = $bar_heights[$bar];
+	
+		for (my $h=0; $h<$BAR_HEIGHT; $h++) {	# draw bars
+			
+			next if $h > $bar_height;	# reached end of bar
+
+			# calc colour
+			my @rgb;
+			if ($h <= $green_height) {
+				@rgb = (0,255,0);
+			} elsif ($h <= $orange_height) {
+				@rgb = (255,153,0);
+			} else {
+				@rgb = (255,0,0);	# red
+			}
+				
+			# draw 1 segment of bar
+			my @pixel = pack("CCCC", @rgb, 255);	# RGBA
+			for (my $bw=0; $bw<$BAR_WIDTH-$BAR_GAP; $bw++) {
+				put_pixel(\$data, $bar*$BAR_WIDTH+$bw+4, $HEIGHT-$h-4-1, @pixel);
+			}
+		}
+	}
+	
+	# convert to pixbuf
+	my $pixbuf = Gtk2::Gdk::Pixbuf->new_from_data ($data, 
+		'GDK_COLORSPACE_RGB', 
+		1, # $has_alpha,
+		8, # $bits_per_sample, 
+		$WIDTH, # $width,
+		$HEIGHT, #$height, 
+		4*$WIDTH); #$rowstride)
+
+	# update icon
+	$statusicon->set_from_pixbuf($pixbuf);
+}
+
+sub log_debug {
+	my $line = shift;
+	print "$line\n";
+}
