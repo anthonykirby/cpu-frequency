@@ -21,4 +21,5 @@ TODO
 * handle system tray sizes & re-sizing
 * RPM / .deb packaging
 * test with CPUs with different range of min/max
+* more documentation, manpage, "-v" option etc
 

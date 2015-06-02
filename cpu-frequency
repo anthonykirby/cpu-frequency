@@ -1,7 +1,26 @@
 #!/usr/bin/perl -w
 use strict;
-use POSIX ":sys_wait_h";
-use File::Basename;
+
+#    cpu-frequency - displays CPU frequency scaling as a taskbar icon
+# 
+#    Copyright (C) 2015 Anthony Kirby
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License along
+#    with this program; if not, write to the Free Software Foundation, Inc.,
+#    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+
+# see http://gtk2-perl.sourceforge.net/doc/gtk2-perl-study-guide/index.html
 
 # TODO cope with quantities of CPUs != 4
 
@@ -15,53 +34,23 @@ use File::Basename;
 
 # TODO check all CPUs have same limits
 
-# TODO configure refresh rate
+# TODO configure refresh rate?
 
+# TODO more documentation
 
-#use Config::Simple;		# RPM: perl-Config-Simple
+# TODO packaging
 
-my $DEBUG=0;
-#$DEBUG=1;
-
-my $program = basename($0);
-#openlog($program, "ndelay,pid", "local0");
-#use Sys::Syslog qw(:standard :macros);		# perl-Sys-Syslog
-#syslog(LOG_INFO, "started");
 use Gtk2 '-init';	# RPM: perl-Gtk2
 
-#my $CONFIG_FILE='yum-notifier.cfg';
-#my $cfg = new Config::Simple($CONFIG_FILE);
-#die "missing config file '$CONFIG_FILE'" unless -r $CONFIG_FILE;
-#die "failed to read config file '$CONFIG_FILE'" unless $cfg;
+
+my $DEBUG=0;
+$DEBUG=1;
+
 
 # how often to refresh
-my $REFRESH_INTERVAL = 1;	# seconds
+my $REFRESH_INTERVAL = 250;	# milliseconds
 
-my $IMAGES_LOCATION='images';	# TODO
-
-# see http://gtk2-perl.sourceforge.net/doc/gtk2-perl-study-guide/index.html
-
-
-my $statusicon = Gtk2::StatusIcon->new_from_file("$IMAGES_LOCATION/icon.png");
-
-
-$statusicon->set_tooltip("cpu_frequency");
-$statusicon->signal_connect( 'activate', \&pop_it );
-$statusicon->signal_connect( 'popup-menu', \&statusicon_context );
-
-#show in tray
-$statusicon->set_visible(1);
-
-# context menu
-my $contextmenu = Gtk2::Menu->new();
-#my $contextmenu_check_now = Gtk2::ImageMenuItem->new_with_label( "Check Now" );
-#$contextmenu_check_now->signal_connect( activate => \&context_click_check_now );
-#$contextmenu->add( $contextmenu_check_now );
-my $contextmenu_quit = Gtk2::ImageMenuItem->new_with_label( "Quit" );
-$contextmenu_quit->signal_connect( activate => \&exit_it );
-$contextmenu_quit->set_image( Gtk2::Image->new_from_stock( 'gtk-quit', 'menu' ) );
-$contextmenu->add( $contextmenu_quit );
-
+##############################################################################
 
 # configure
 my $cpus = count_cpus();
@@ -83,27 +72,29 @@ my $BAR_HEIGHT = 16;	# TODO
 my $green_height = int($green_percent / 100 * $BAR_HEIGHT);
 my $orange_height = int($orange_percent / 100 * $BAR_HEIGHT);
 
-sleep(1) if $DEBUG;
-
-refresh_start();
-
-#end event loop
-Gtk2->main;
 
 
+my $IMAGES_LOCATION='images';	# TODO use findbin to find images
 
-sub exit_it {
-   Gtk2->main_quit;
-   return 0;
-}
 
-sub pop_it {
-#	$statusicon->set_from_file('rpm_bad.png');
-}
+#=============================================================================
+# Status Icon UI
 
-sub context_click_check_now {
-	consider_update_callback(1);
-}
+# create status icon
+my $statusicon = Gtk2::StatusIcon->new_from_file("$IMAGES_LOCATION/icon.png");
+$statusicon->set_tooltip("cpu_frequency");
+$statusicon->signal_connect( 'popup-menu', \&statusicon_context );
+
+# show in tray
+$statusicon->set_visible(1);
+
+# create context menu
+my $contextmenu = Gtk2::Menu->new();
+my $contextmenu_quit = Gtk2::ImageMenuItem->new_with_label( "Quit" );
+$contextmenu_quit->signal_connect( activate => \&exit_clicked );
+$contextmenu_quit->set_image( Gtk2::Image->new_from_stock( 'gtk-quit', 'menu' ) );
+$contextmenu->add( $contextmenu_quit );
+
 
 sub statusicon_context {
     my $ticon = shift;
@@ -121,18 +112,30 @@ sub statusicon_context {
 }
 
 
-sub count_cpus {
-	my $count=0;
-	while (-d "/sys/devices/system/cpu/cpu$count") {
-		$count++;
-	}
-	log_debug ("detected $count CPUs") if $DEBUG;
-	return $count;
+#=============================================================================
+# main loop
+
+sleep(1) if $DEBUG;
+
+# start updating
+refresh_start();
+
+#start event loop
+Gtk2->main;
+
+sub exit_clicked {
+   Gtk2->main_quit;
+   return 0;
 }
+
+#=============================================================================
+
+
+
 
 sub refresh_start {
 	# start polling...
-	Glib::Timeout->add($REFRESH_INTERVAL*250, \&refresh_callback);
+	Glib::Timeout->add($REFRESH_INTERVAL, \&refresh_callback);
 }
 
 sub refresh_callback {
@@ -144,6 +147,14 @@ sub refresh_callback {
 }
 
 
+sub count_cpus {
+	my $count=0;
+	while (-d "/sys/devices/system/cpu/cpu$count") {
+		$count++;
+	}
+	log_debug ("detected $count CPUs") if $DEBUG;
+	return $count;
+}
 
 sub get_limits {
 	my $cpus = shift or die;
@@ -188,8 +199,11 @@ sub get_cur_freq {
 
 sub read_file {
 	my $filename = shift or die;
-	chomp(my $contents = `cat $filename`);	# TODO more efficient
-#	print "-->$contents<--\n";
+	
+	open (my $fh, "<", $filename) or die "Couldn't open file $filename: $!";
+	chomp (my $contents = <$fh>);	# just need first/only line
+	close $fh;
+
 	return $contents;
 }
 
@@ -203,11 +217,11 @@ sub put_pixel {
 	substr($$r_pixels, ($x + $WIDTH*$y)*4, 4) = $pixel;
 }
 
+# get current frequencies & return as percentages of max
 sub get_freqs_as_percents {
 	my @percents;
 	for my $cpu (0 .. $cpus-1) {
 		my $current = get_cur_freq($cpu);
-#		my $percent = int(((($current - $limits{$cpu}{'min'}) * 100) + 0.5) / ($limits{$cpu}{'max'}-$limits{$cpu}{'min'}));
 		my $percent = int(($current * 100 + 0.5) / $limits{$cpu}{'max'});
 		log_debug ("$cpu: $current $percent") if $DEBUG;
 		push @percents, $percent;
@@ -215,6 +229,8 @@ sub get_freqs_as_percents {
 	return @percents;	
 }
 
+# create blank canvas, with border & background
+# TODO this is inefficient but simple
 sub create_canvas {
 	my $data;
 	# initialise buffer
@@ -254,7 +270,6 @@ sub update {
 		push @bar_heights, $bar_height;
 	}
 
-
 	# has it changed since we last looked?
 	# (deliberately doing this check after conversion to pixels)
 	our @previous_bar_heights;
@@ -275,7 +290,6 @@ sub update {
 	
 		
 	# draw bars..
-
 	my $BARS = scalar(@bar_heights);	# how many bars?
 	my $BAR_WIDTH = int (($WIDTH - 8) / $BARS);	# width (incl gap) between bars
 	my $BAR_GAP = 1;
