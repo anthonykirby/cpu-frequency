@@ -18,8 +18,9 @@ TODO
 
 * test on multi-CPU (as well as just multi-core)
 * test with a wider range of CPU counts & types
-* handle system tray sizes & re-sizing
+* test with a wider range of window managers
 * RPM / .deb packaging
 * test with CPUs with different range of min/max
-* more documentation, manpage, "-v" option etc
+* more documentation, manpage, "-v" option etc, "About" box
+* ~~handle system tray sizes & re-sizing~~
 

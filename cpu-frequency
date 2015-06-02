@@ -26,13 +26,9 @@ use strict;
 
 # TODO display sensible things if scaling is other than 50-100% max CPU
 
-# TODO tooltip display with extra detail
+# TODO tooltip display with extra detail?
 
-# TODO size is configurable / detected
-
-# TODO size-changed notification
-
-# TODO check all CPUs have same limits
+# TODO check all CPUs have same limits?
 
 # TODO configure refresh rate?
 
@@ -41,10 +37,10 @@ use strict;
 # TODO packaging
 
 use Gtk2 '-init';	# RPM: perl-Gtk2
-
+use FindBin;
 
 my $DEBUG=0;
-$DEBUG=1;
+#$DEBUG=1;
 
 
 # how often to refresh
@@ -63,18 +59,14 @@ log_debug ("green_percent=$green_percent%") if $DEBUG;
 log_debug ("orange_percent=$orange_percent%") if $DEBUG;
 
 
-# TODO recalculate on rescale
-my $WIDTH=24;
-my $HEIGHT=24;
-
-my $BAR_HEIGHT = 16;	# TODO
-
-my $green_height = int($green_percent / 100 * $BAR_HEIGHT);
-my $orange_height = int($orange_percent / 100 * $BAR_HEIGHT);
+# sample value; we expect to receive a resize event when we start anyway
+my ($WIDTH, $HEIGHT, $BAR_HEIGHT);
+my ($green_height, $orange_height);
+my $BORDER_SIZE = 4;
+resize(24);
 
 
-
-my $IMAGES_LOCATION='images';	# TODO use findbin to find images
+my $IMAGES_LOCATION="${FindBin::Bin}/images";
 
 
 #=============================================================================
@@ -84,6 +76,7 @@ my $IMAGES_LOCATION='images';	# TODO use findbin to find images
 my $statusicon = Gtk2::StatusIcon->new_from_file("$IMAGES_LOCATION/icon.png");
 $statusicon->set_tooltip("cpu_frequency");
 $statusicon->signal_connect( 'popup-menu', \&statusicon_context );
+$statusicon->signal_connect( 'size-changed', \&icon_resized );
 
 # show in tray
 $statusicon->set_visible(1);
@@ -109,6 +102,23 @@ sub statusicon_context {
   
     $contextmenu->show_all;
 	return 1;
+}
+
+sub icon_resized {
+	my $icon = shift;
+	my $size = shift;
+	log_debug("resized! = $size") if $DEBUG;
+	resize($size);
+	return 1;	# we'll redraw our icon;  don't need GTK to scale it
+}
+
+sub resize {
+	my $size = shift;	
+	$WIDTH = $size;
+	$HEIGHT = $size;
+	$BAR_HEIGHT = $HEIGHT-$BORDER_SIZE*2;
+	$green_height = int($green_percent / 100 * $BAR_HEIGHT);
+	$orange_height = int($orange_percent / 100 * $BAR_HEIGHT);
 }
 
 
@@ -233,6 +243,11 @@ sub get_freqs_as_percents {
 # TODO this is inefficient but simple
 sub create_canvas {
 	my $data;
+	
+	my $transparent = pack("CCCC", 255, 0, 0, 0);
+	my @border_colour = (127,127,127);
+	my @background_colour = (0,0,0);
+
 	# initialise buffer
 	for (my $x=0;$x<$WIDTH;$x++) {
 		for (my $y=0;$y<$HEIGHT;$y++) {
@@ -240,20 +255,21 @@ sub create_canvas {
 		}
 	}
 	# border
-	my @border_colour = (127,127,127);
 	my $border_pixel = pack("CCCC", @border_colour, 255);
-	for (my $x=1;$x<$WIDTH-1;$x++) {
+	for (my $x=1;$x<$WIDTH-2;$x++) {
 		put_pixel(\$data, $x, 1, $border_pixel);	# RGBA
 		put_pixel(\$data, $x, $HEIGHT-2, $border_pixel);	# RGBA
 	}
 	for (my $y=1;$y<$HEIGHT-2;$y++) {
 		put_pixel(\$data, 1, $y, $border_pixel);	# RGBA
-		put_pixel(\$data, $WIDTH-2, $y, $border_pixel);	# RGBA
+		put_pixel(\$data, $WIDTH-3, $y, $border_pixel);	# RGBA
 	}
+
 	# background
-	for (my $x=3;$x<$WIDTH-3;$x++) {
+	my $packground_pixel = pack("CCCC", @background_colour, 255);
+	for (my $x=3;$x<$WIDTH-4;$x++) {
 		for (my $y=3;$y<$HEIGHT-3;$y++) {
-			put_pixel(\$data, $x, $y, pack("CCCC", 0, 0, 0, 255));	# RGBA
+			put_pixel(\$data, $x, $y, $packground_pixel);	# RGBA
 		}
 	}
 	return $data;
@@ -291,7 +307,7 @@ sub update {
 		
 	# draw bars..
 	my $BARS = scalar(@bar_heights);	# how many bars?
-	my $BAR_WIDTH = int (($WIDTH - 8) / $BARS);	# width (incl gap) between bars
+	my $BAR_WIDTH = int (($WIDTH - $BORDER_SIZE*2) / $BARS);	# width (incl gap) between bars
 	my $BAR_GAP = 1;
 	
 	for (my $bar=0; $bar<$BARS ; $bar++) {	# iterate over bars
@@ -315,7 +331,7 @@ sub update {
 			# draw 1 segment of bar
 			my @pixel = pack("CCCC", @rgb, 255);	# RGBA
 			for (my $bw=0; $bw<$BAR_WIDTH-$BAR_GAP; $bw++) {
-				put_pixel(\$data, $bar*$BAR_WIDTH+$bw+4, $HEIGHT-$h-4-1, @pixel);
+				put_pixel(\$data, $bar*$BAR_WIDTH+$bw+$BORDER_SIZE, $HEIGHT-$h-$BORDER_SIZE-1, @pixel);
 			}
 		}
 	}
